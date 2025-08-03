@@ -17,9 +17,9 @@ class DatabaseManager:
         
         # Convert libsql:// to https:// for HTTP API
         if self.database_url.startswith("libsql://"):
-            self.api_url = self.database_url.replace("libsql://", "https://") + "/v1/execute"
+            self.api_url = self.database_url.replace("libsql://", "https://") + "/v2/pipeline"
         else:
-            self.api_url = self.database_url.rstrip('/') + "/v1/execute"
+            self.api_url = self.database_url.rstrip('/') + "/v2/pipeline"
     
     async def initialize(self):
         """Initialize the database connection and create tables"""
@@ -36,18 +36,24 @@ class DatabaseManager:
             raise
     
     async def _execute_query(self, query: str, params: Optional[List] = None) -> Dict[str, Any]:
-        """Execute a query using Turso HTTP API"""
+        """Execute a query using Turso HTTP API v2"""
         headers = {
             "Authorization": f"Bearer {self.auth_token}",
             "Content-Type": "application/json"
         }
         
-        payload = {
-            "stmt": query
-        }
-        
+        # Build the statement object
+        stmt = {"sql": query}
         if params:
-            payload["args"] = params
+            stmt["args"] = params
+        
+        # Build the payload with proper v2 structure
+        payload = {
+            "requests": [
+                {"type": "execute", "stmt": stmt},
+                {"type": "close"}
+            ]
+        }
         
         async with httpx.AsyncClient() as client:
             response = await client.post(
@@ -60,7 +66,17 @@ class DatabaseManager:
             if response.status_code != 200:
                 raise Exception(f"Database query failed: {response.status_code} - {response.text}")
             
-            return response.json()
+            result = response.json()
+            
+            # Extract the actual result from the v2 response structure
+            if "results" in result and len(result["results"]) > 0:
+                first_result = result["results"][0]
+                if first_result.get("type") == "ok" and "response" in first_result:
+                    return first_result["response"].get("result", {})
+                elif first_result.get("type") == "error":
+                    raise Exception(f"Database query error: {first_result.get('error', 'Unknown error')}")
+            
+            return result
     
     async def _create_tables(self):
         """Create necessary tables"""
@@ -103,13 +119,14 @@ class DatabaseManager:
         users = []
         if "rows" in result:
             for row in result["rows"]:
+                # Extract values from Turso v2 format
                 user = {
-                    "id": row[0],
-                    "username": row[1],
-                    "email": row[2],
-                    "steam_id": row[3],
-                    "created_at": row[4],
-                    "updated_at": row[5]
+                    "id": self._extract_value(row[0]),
+                    "username": self._extract_value(row[1]),
+                    "email": self._extract_value(row[2]),
+                    "steam_id": self._extract_value(row[3]),
+                    "created_at": self._extract_value(row[4]),
+                    "updated_at": self._extract_value(row[5])
                 }
                 users.append(user)
         
@@ -126,12 +143,12 @@ class DatabaseManager:
         
         row = result["rows"][0]
         return {
-            "id": row[0],
-            "username": row[1],
-            "email": row[2],
-            "steam_id": row[3],
-            "created_at": row[4],
-            "updated_at": row[5]
+            "id": self._extract_value(row[0]),
+            "username": self._extract_value(row[1]),
+            "email": self._extract_value(row[2]),
+            "steam_id": self._extract_value(row[3]),
+            "created_at": self._extract_value(row[4]),
+            "updated_at": self._extract_value(row[5])
         }
     
     async def delete_user(self, user_id: int) -> bool:
@@ -141,6 +158,12 @@ class DatabaseManager:
         result = await self._execute_query(query, [user_id])
         
         return result.get("rows_affected", 0) > 0
+    
+    def _extract_value(self, turso_value):
+        """Extract value from Turso v2 API response format"""
+        if isinstance(turso_value, dict) and "value" in turso_value:
+            return turso_value["value"]
+        return turso_value
     
     async def close(self):
         """Close database connection"""
