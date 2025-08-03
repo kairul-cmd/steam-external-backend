@@ -1,29 +1,31 @@
 import os
 import asyncio
-from typing import List, Dict, Optional
-from libsql_client import create_client_sync
-from libsql_client.sync import Client
+import httpx
+import json
+from typing import List, Dict, Optional, Any
 from dotenv import load_dotenv
 
 load_dotenv()
 
 class DatabaseManager:
     def __init__(self):
-        self.client: Optional[Client] = None
         self.database_url = os.getenv("TURSO_DATABASE_URL")
         self.auth_token = os.getenv("TURSO_AUTH_TOKEN")
         
         if not self.database_url or not self.auth_token:
             raise ValueError("TURSO_DATABASE_URL and TURSO_AUTH_TOKEN must be set in environment variables")
+        
+        # Convert libsql:// to https:// for HTTP API
+        if self.database_url.startswith("libsql://"):
+            self.api_url = self.database_url.replace("libsql://", "https://") + "/v1/execute"
+        else:
+            self.api_url = self.database_url.rstrip('/') + "/v1/execute"
     
     async def initialize(self):
         """Initialize the database connection and create tables"""
         try:
-            # Create synchronous client (libsql-client doesn't have async support yet)
-            self.client = create_client_sync(
-                url=self.database_url,
-                auth_token=self.auth_token
-            )
+            # Test connection
+            await self.test_connection()
             
             # Create tables if they don't exist
             await self._create_tables()
@@ -32,6 +34,33 @@ class DatabaseManager:
         except Exception as e:
             print(f"Failed to initialize database: {e}")
             raise
+    
+    async def _execute_query(self, query: str, params: Optional[List] = None) -> Dict[str, Any]:
+        """Execute a query using Turso HTTP API"""
+        headers = {
+            "Authorization": f"Bearer {self.auth_token}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "stmt": query
+        }
+        
+        if params:
+            payload["args"] = params
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                self.api_url,
+                headers=headers,
+                json=payload,
+                timeout=30.0
+            )
+            
+            if response.status_code != 200:
+                raise Exception(f"Database query failed: {response.status_code} - {response.text}")
+            
+            return response.json()
     
     async def _create_tables(self):
         """Create necessary tables"""
@@ -46,87 +75,56 @@ class DatabaseManager:
         )
         """
         
-        # Run in thread pool since libsql-client is synchronous
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, self.client.execute, create_users_table)
+        await self._execute_query(create_users_table)
     
     async def test_connection(self):
         """Test database connection"""
-        if not self.client:
-            raise Exception("Database not initialized")
-        
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None, 
-            self.client.execute, 
-            "SELECT 1 as test"
-        )
+        result = await self._execute_query("SELECT 1 as test")
         return result
     
     async def create_user(self, username: str, email: str, steam_id: Optional[str] = None) -> int:
         """Create a new user"""
-        if not self.client:
-            raise Exception("Database not initialized")
-        
         query = """
         INSERT INTO users (username, email, steam_id) 
         VALUES (?, ?, ?)
         """
         
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None,
-            self.client.execute,
-            query,
-            [username, email, steam_id]
-        )
+        result = await self._execute_query(query, [username, email, steam_id])
         
-        return result.last_insert_rowid
+        return result.get("last_insert_rowid", 0)
     
     async def get_all_users(self) -> List[Dict]:
         """Get all users"""
-        if not self.client:
-            raise Exception("Database not initialized")
-        
         query = "SELECT * FROM users ORDER BY created_at DESC"
         
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, self.client.execute, query)
+        result = await self._execute_query(query)
         
         # Convert rows to dictionaries
         users = []
-        for row in result.rows:
-            user = {
-                "id": row[0],
-                "username": row[1],
-                "email": row[2],
-                "steam_id": row[3],
-                "created_at": row[4],
-                "updated_at": row[5]
-            }
-            users.append(user)
+        if "rows" in result:
+            for row in result["rows"]:
+                user = {
+                    "id": row[0],
+                    "username": row[1],
+                    "email": row[2],
+                    "steam_id": row[3],
+                    "created_at": row[4],
+                    "updated_at": row[5]
+                }
+                users.append(user)
         
         return users
     
     async def get_user_by_id(self, user_id: int) -> Optional[Dict]:
         """Get a user by ID"""
-        if not self.client:
-            raise Exception("Database not initialized")
-        
         query = "SELECT * FROM users WHERE id = ?"
         
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None,
-            self.client.execute,
-            query,
-            [user_id]
-        )
+        result = await self._execute_query(query, [user_id])
         
-        if not result.rows:
+        if not result.get("rows") or len(result["rows"]) == 0:
             return None
         
-        row = result.rows[0]
+        row = result["rows"][0]
         return {
             "id": row[0],
             "username": row[1],
@@ -138,24 +136,12 @@ class DatabaseManager:
     
     async def delete_user(self, user_id: int) -> bool:
         """Delete a user by ID"""
-        if not self.client:
-            raise Exception("Database not initialized")
-        
         query = "DELETE FROM users WHERE id = ?"
         
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None,
-            self.client.execute,
-            query,
-            [user_id]
-        )
+        result = await self._execute_query(query, [user_id])
         
-        return result.rows_affected > 0
+        return result.get("rows_affected", 0) > 0
     
     async def close(self):
         """Close database connection"""
-        if self.client:
-            # libsql-client doesn't require explicit closing
-            self.client = None
-            print("Database connection closed")
+        print("Database connection closed")
