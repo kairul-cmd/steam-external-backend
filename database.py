@@ -165,6 +165,119 @@ class DatabaseManager:
             return turso_value["value"]
         return turso_value
     
+    async def get_files_by_app_id(self, app_id: str) -> List[Dict]:
+        """Get all files for a specific app_id from all file tables"""
+        query = """
+        SELECT id, app_id, filename, size, uploaded_at, 'json' as file_type 
+        FROM json_files WHERE app_id = ?
+        UNION ALL
+        SELECT id, app_id, filename, size, uploaded_at, 'lua' as file_type 
+        FROM lua_files WHERE app_id = ?
+        UNION ALL
+        SELECT id, app_id, filename, size, uploaded_at, 'manifest' as file_type 
+        FROM manifest_files WHERE app_id = ?
+        UNION ALL
+        SELECT id, app_id, filename, size, uploaded_at, 'vdf' as file_type 
+        FROM vdf_files WHERE app_id = ?
+        ORDER BY uploaded_at DESC
+        """
+        
+        try:
+            result = await self._execute_query(query, [app_id, app_id, app_id, app_id])
+            
+            files = []
+            if "rows" in result:
+                for row in result["rows"]:
+                    files.append({
+                        "id": self._extract_value(row[0]),
+                        "app_id": self._extract_value(row[1]),
+                        "filename": self._extract_value(row[2]),
+                        "size": self._extract_value(row[3]),
+                        "uploaded_at": self._extract_value(row[4]),
+                        "file_type": self._extract_value(row[5])
+                    })
+            
+            return files
+            
+        except Exception as e:
+            print(f"Error getting files for app {app_id}: {e}")
+            return []
+    
+    async def get_file_by_id(self, file_id: str, file_type: str) -> Optional[Dict]:
+        """Get a specific file by ID and type"""
+        table_map = {
+            'json': 'json_files',
+            'lua': 'lua_files', 
+            'manifest': 'manifest_files',
+            'vdf': 'vdf_files'
+        }
+        
+        if file_type not in table_map:
+            return None
+            
+        table_name = table_map[file_type]
+        query = f"SELECT id, app_id, filename, content, size, uploaded_at FROM {table_name} WHERE id = ?"
+        
+        try:
+            result = await self._execute_query(query, [file_id])
+            
+            if "rows" in result and len(result["rows"]) > 0:
+                row = result["rows"][0]
+                return {
+                    "id": self._extract_value(row[0]),
+                    "app_id": self._extract_value(row[1]),
+                    "filename": self._extract_value(row[2]),
+                    "content": self._extract_value(row[3]),
+                    "size": self._extract_value(row[4]),
+                    "uploaded_at": self._extract_value(row[5]),
+                    "file_type": file_type
+                }
+            
+            return None
+            
+        except Exception as e:
+            print(f"Error getting file {file_id} from {table_name}: {e}")
+            return None
+    
+    async def get_all_files_content_by_app_id(self, app_id: str) -> List[Dict]:
+        """Get all files with content for a specific app_id (for ZIP download)"""
+        query = """
+        SELECT id, app_id, filename, content, size, uploaded_at, 'json' as file_type 
+        FROM json_files WHERE app_id = ?
+        UNION ALL
+        SELECT id, app_id, filename, content, size, uploaded_at, 'lua' as file_type 
+        FROM lua_files WHERE app_id = ?
+        UNION ALL
+        SELECT id, app_id, filename, content, size, uploaded_at, 'manifest' as file_type 
+        FROM manifest_files WHERE app_id = ?
+        UNION ALL
+        SELECT id, app_id, filename, content, size, uploaded_at, 'vdf' as file_type 
+        FROM vdf_files WHERE app_id = ?
+        ORDER BY uploaded_at DESC
+        """
+        
+        try:
+            result = await self._execute_query(query, [app_id, app_id, app_id, app_id])
+            
+            files = []
+            if "rows" in result:
+                for row in result["rows"]:
+                    files.append({
+                        "id": self._extract_value(row[0]),
+                        "app_id": self._extract_value(row[1]),
+                        "filename": self._extract_value(row[2]),
+                        "content": self._extract_value(row[3]),
+                        "size": self._extract_value(row[4]),
+                        "uploaded_at": self._extract_value(row[5]),
+                        "file_type": self._extract_value(row[6])
+                    })
+            
+            return files
+            
+        except Exception as e:
+            print(f"Error getting files content for app {app_id}: {e}")
+            return []
+
     async def close(self):
         """Close database connection"""
         print("Database connection closed")

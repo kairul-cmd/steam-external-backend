@@ -1,13 +1,19 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from contextlib import asynccontextmanager
 import os
 import asyncio
 import httpx
+import zipfile
+import io
 from datetime import datetime
 from dotenv import load_dotenv
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 from database import DatabaseManager
-from models import App, ApiResponse
+from models import App, ApiResponse, AppFile
 from typing import List
 
 # Load environment variables
@@ -40,13 +46,18 @@ async def lifespan(app: FastAPI):
     keep_alive_task_handle.cancel()
     await db_manager.close()
 
-# Create FastAPI app
+# Rate limiter setup
+limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(
     title="Steam External Backend API",
     description="FastAPI backend for Steam apps data connected to Turso database",
     version="1.0.0",
     lifespan=lifespan
 )
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# FastAPI app already created above with rate limiter
 
 # Add CORS middleware
 app.add_middleware(
@@ -128,7 +139,184 @@ async def get_app(app_id: str):
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to retrieve app: {str(e)}"
+            detail=f"Internal server error: {str(e)}"
+        )
+
+# File download endpoints
+
+def get_file_extension(file_type: str) -> str:
+    """Get file extension based on file type"""
+    extensions = {
+        'json': '.json',
+        'lua': '.lua', 
+        'manifest': '.manifest',
+        'vdf': '.vdf'
+    }
+    return extensions.get(file_type, '.txt')
+
+def get_mime_type(file_type: str) -> str:
+    """Get MIME type based on file type"""
+    mime_types = {
+        'json': 'application/json',
+        'lua': 'text/plain',
+        'manifest': 'text/plain', 
+        'vdf': 'text/plain'
+    }
+    return mime_types.get(file_type, 'text/plain')
+
+@app.get("/files/{app_id}", response_model=ApiResponse)
+async def list_files(app_id: str):
+    """List all files for a specific app_id"""
+    try:
+        # Validate app_id is numeric
+        if not app_id.isdigit():
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid app_id format. Must be numeric."
+            )
+        
+        files = await db_manager.get_files_by_app_id(app_id)
+        
+        # Convert to AppFile models
+        app_files = []
+        for file_data in files:
+            app_files.append(AppFile(
+                id=file_data['id'],
+                app_id=file_data['app_id'],
+                filename=file_data['filename'],
+                file_type=file_data['file_type'],
+                size=file_data['size'],
+                uploaded_at=file_data['uploaded_at']
+            ))
+        
+        return ApiResponse(
+            success=True,
+            message=f"Found {len(app_files)} files for app {app_id}",
+            data={"files": [file.dict() for file in app_files]}
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error: {str(e)}"
+        )
+
+@app.get("/download/file/{file_id}")
+@limiter.limit("1/2minutes")
+async def download_file(request: Request, file_id: str, file_type: str):
+    """Download a specific file by ID and type"""
+    try:
+        # Validate file_type
+        valid_types = ['json', 'lua', 'manifest', 'vdf']
+        if file_type not in valid_types:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid file_type. Must be one of: {', '.join(valid_types)}"
+            )
+        
+        file_data = await db_manager.get_file_by_id(file_id, file_type)
+        
+        if not file_data:
+            raise HTTPException(
+                status_code=404,
+                detail="File not found"
+            )
+        
+        # Get file extension and ensure filename has it
+        extension = get_file_extension(file_type)
+        filename = file_data['filename']
+        if not filename.endswith(extension):
+            filename += extension
+        
+        # Create file content as bytes
+        content = file_data['content'].encode('utf-8')
+        
+        # Create streaming response
+        def generate():
+            yield content
+        
+        headers = {
+            'Content-Disposition': f'attachment; filename="{filename}"',
+            'Content-Length': str(len(content))
+        }
+        
+        return StreamingResponse(
+            generate(),
+            media_type=get_mime_type(file_type),
+            headers=headers
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error: {str(e)}"
+        )
+
+@app.get("/download/app/{app_id}")
+@limiter.limit("1/2minutes")
+async def download_app_files(request: Request, app_id: str):
+    """Download all files for an app as a ZIP archive"""
+    try:
+        # Validate app_id is numeric
+        if not app_id.isdigit():
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid app_id format. Must be numeric."
+            )
+        
+        files = await db_manager.get_all_files_content_by_app_id(app_id)
+        
+        if not files:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No files found for app {app_id}"
+            )
+        
+        # Create ZIP file in memory
+        zip_buffer = io.BytesIO()
+        
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            for file_data in files:
+                # Get file extension and ensure filename has it
+                extension = get_file_extension(file_data['file_type'])
+                filename = file_data['filename']
+                if not filename.endswith(extension):
+                    filename += extension
+                
+                # Add file to ZIP
+                zip_file.writestr(filename, file_data['content'])
+        
+        zip_buffer.seek(0)
+        
+        # Create streaming response
+        def generate():
+            while True:
+                chunk = zip_buffer.read(8192)
+                if not chunk:
+                    break
+                yield chunk
+        
+        headers = {
+            'Content-Disposition': f'attachment; filename="app_{app_id}_files.zip"',
+            'Content-Length': str(len(zip_buffer.getvalue()))
+        }
+        
+        return StreamingResponse(
+            generate(),
+            media_type='application/zip',
+            headers=headers
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error: {str(e)}"
         )
 
 if __name__ == "__main__":
