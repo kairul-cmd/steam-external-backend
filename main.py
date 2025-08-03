@@ -143,6 +143,8 @@ async def get_app(app_id: str):
         )
 
 # File download endpoints
+# These endpoints preserve binary integrity by avoiding unnecessary base64 conversions
+# and returning files in their original format to prevent size inflation
 
 def get_file_extension(file_type: str) -> str:
     """Get file extension based on file type"""
@@ -230,21 +232,31 @@ async def download_file(request: Request, file_id: str, file_type: str):
         if not filename.endswith(extension):
             filename += extension
         
-        # Create file content as bytes
-        content = file_data['content'].encode('utf-8')
+        # Return original file content without any encoding conversion
+        # This preserves the exact binary data and file size
+        original_content = file_data['content']
         
-        # Create streaming response
+        # Convert to bytes only if it's a string (for text files)
+        if isinstance(original_content, str):
+            content_bytes = original_content.encode('utf-8')
+        else:
+            # If it's already bytes, use as-is
+            content_bytes = original_content
+        
+        # Create streaming response with original binary data
         def generate():
-            yield content
+            yield content_bytes
         
         headers = {
             'Content-Disposition': f'attachment; filename="{filename}"',
-            'Content-Length': str(len(content))
+            'Content-Length': str(len(content_bytes)),
+            'Content-Type': 'application/octet-stream',  # Use binary type to preserve data
+            'Cache-Control': 'no-cache'
         }
         
         return StreamingResponse(
             generate(),
-            media_type=get_mime_type(file_type),
+            media_type='application/octet-stream',  # Binary download to preserve integrity
             headers=headers
         )
         
@@ -287,12 +299,23 @@ async def download_app_files(request: Request, app_id: str):
                 if not filename.endswith(extension):
                     filename += extension
                 
-                # Add file to ZIP
-                zip_file.writestr(filename, file_data['content'])
+                # Preserve original file content without conversion
+                original_content = file_data['content']
+                
+                # Handle content based on its type to preserve binary integrity
+                if isinstance(original_content, str):
+                    # For text files, encode to bytes
+                    file_bytes = original_content.encode('utf-8')
+                else:
+                    # For binary files, use as-is
+                    file_bytes = original_content
+                
+                # Add file to ZIP with original binary data
+                zip_file.writestr(filename, file_bytes)
         
         zip_buffer.seek(0)
         
-        # Create streaming response
+        # Create streaming response with binary integrity preservation
         def generate():
             while True:
                 chunk = zip_buffer.read(8192)
@@ -302,7 +325,9 @@ async def download_app_files(request: Request, app_id: str):
         
         headers = {
             'Content-Disposition': f'attachment; filename="app_{app_id}_files.zip"',
-            'Content-Length': str(len(zip_buffer.getvalue()))
+            'Content-Length': str(zip_buffer.getbuffer().nbytes),
+            'Content-Type': 'application/zip',
+            'Cache-Control': 'no-cache'
         }
         
         return StreamingResponse(
