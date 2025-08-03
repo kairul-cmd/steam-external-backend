@@ -35,6 +35,27 @@ class DatabaseManager:
             print(f"Failed to initialize database: {e}")
             raise
     
+    def _format_turso_params(self, params: Optional[List]) -> List[Dict[str, Any]]:
+        """Format parameters for Turso v2 API - each param must be a type-value object"""
+        if not params:
+            return []
+        
+        formatted_params = []
+        for param in params:
+            if param is None:
+                formatted_params.append({"type": "null", "value": None})
+            elif isinstance(param, str):
+                formatted_params.append({"type": "text", "value": param})
+            elif isinstance(param, int):
+                formatted_params.append({"type": "integer", "value": str(param)})
+            elif isinstance(param, float):
+                formatted_params.append({"type": "real", "value": str(param)})
+            else:
+                # Default to text for other types
+                formatted_params.append({"type": "text", "value": str(param)})
+        
+        return formatted_params
+    
     async def _execute_query(self, query: str, params: Optional[List] = None) -> Dict[str, Any]:
         """Execute a query using Turso HTTP API v2"""
         headers = {
@@ -45,7 +66,7 @@ class DatabaseManager:
         # Build the statement object
         stmt = {"sql": query}
         if params:
-            stmt["args"] = params
+            stmt["args"] = self._format_turso_params(params)
         
         # Build the payload with proper v2 structure
         payload = {
