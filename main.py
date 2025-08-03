@@ -2,6 +2,9 @@ from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import os
+import asyncio
+import httpx
+from datetime import datetime
 from dotenv import load_dotenv
 from database import DatabaseManager
 from models import App, ApiResponse
@@ -10,15 +13,31 @@ from typing import List
 # Load environment variables
 load_dotenv()
 
-# Initialize database manager
+# Global database manager instance
 db_manager = DatabaseManager()
+
+# Keep-alive task to prevent Render free tier sleep
+async def keep_alive_task():
+    """Background task to ping the server every 10 minutes to prevent sleep"""
+    while True:
+        try:
+            await asyncio.sleep(600)  # Wait 10 minutes
+            async with httpx.AsyncClient() as client:
+                response = await client.get("http://localhost:8000/ping", timeout=10.0)
+                print(f"Keep-alive ping: {response.status_code} at {datetime.now()}")
+        except Exception as e:
+            print(f"Keep-alive ping failed: {e}")
+            # Continue the loop even if ping fails
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     await db_manager.initialize()
+    # Start keep-alive task
+    keep_alive_task_handle = asyncio.create_task(keep_alive_task())
     yield
     # Shutdown
+    keep_alive_task_handle.cancel()
     await db_manager.close()
 
 # Create FastAPI app
@@ -63,6 +82,15 @@ async def health_check():
             status_code=503,
             detail=f"Database connection failed: {str(e)}"
         )
+
+@app.get("/ping")
+async def ping():
+    """Lightweight ping endpoint to keep server alive"""
+    return {
+        "status": "alive",
+        "timestamp": datetime.now().isoformat(),
+        "message": "Server is active"
+    }
 
 @app.get("/apps", response_model=ApiResponse)
 async def get_apps():
