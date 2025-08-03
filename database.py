@@ -98,66 +98,45 @@ class DatabaseManager:
         result = await self._execute_query("SELECT 1 as test")
         return result
     
-    async def create_user(self, username: str, email: str, steam_id: Optional[str] = None) -> int:
-        """Create a new user"""
-        query = """
-        INSERT INTO users (username, email, steam_id) 
-        VALUES (?, ?, ?)
-        """
-        
-        result = await self._execute_query(query, [username, email, steam_id])
-        
-        return result.get("last_insert_rowid", 0)
-    
-    async def get_all_users(self) -> List[Dict]:
-        """Get all users"""
-        query = "SELECT * FROM users ORDER BY created_at DESC"
+    async def get_all_apps(self) -> List[Dict]:
+        """Get all apps"""
+        query = "SELECT * FROM apps ORDER BY created_at DESC"
         
         result = await self._execute_query(query)
         
         # Convert rows to dictionaries
-        users = []
+        apps = []
         if "rows" in result:
             for row in result["rows"]:
                 # Extract values from Turso v2 format
-                user = {
-                    "id": self._extract_value(row[0]),
-                    "username": self._extract_value(row[1]),
-                    "email": self._extract_value(row[2]),
-                    "steam_id": self._extract_value(row[3]),
-                    "created_at": self._extract_value(row[4]),
-                    "updated_at": self._extract_value(row[5])
+                app = {
+                    "app_id": self._extract_value(row[0]),
+                    "created_at": self._extract_value(row[1]),
+                    "updated_at": self._extract_value(row[2]),
+                    "name": self._extract_value(row[3]),
+                    "type": self._extract_value(row[4])
                 }
-                users.append(user)
+                apps.append(app)
         
-        return users
+        return apps
     
-    async def get_user_by_id(self, user_id: int) -> Optional[Dict]:
-        """Get a user by ID"""
-        query = "SELECT * FROM users WHERE id = ?"
+    async def get_app_by_id(self, app_id: str) -> Optional[Dict]:
+        """Get an app by app_id"""
+        query = "SELECT * FROM apps WHERE app_id = ?"
         
-        result = await self._execute_query(query, [user_id])
+        result = await self._execute_query(query, [app_id])
         
         if not result.get("rows") or len(result["rows"]) == 0:
             return None
         
         row = result["rows"][0]
         return {
-            "id": self._extract_value(row[0]),
-            "username": self._extract_value(row[1]),
-            "email": self._extract_value(row[2]),
-            "steam_id": self._extract_value(row[3]),
-            "created_at": self._extract_value(row[4]),
-            "updated_at": self._extract_value(row[5])
+            "app_id": self._extract_value(row[0]),
+            "created_at": self._extract_value(row[1]),
+            "updated_at": self._extract_value(row[2]),
+            "name": self._extract_value(row[3]),
+            "type": self._extract_value(row[4])
         }
-    
-    async def delete_user(self, user_id: int) -> bool:
-        """Delete a user by ID"""
-        query = "DELETE FROM users WHERE id = ?"
-        
-        result = await self._execute_query(query, [user_id])
-        
-        return result.get("rows_affected", 0) > 0
     
     def _extract_value(self, turso_value):
         """Extract value from Turso v2 API response format"""

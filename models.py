@@ -1,41 +1,24 @@
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
 from typing import Optional, Any, List
 from datetime import datetime
 
-class CreateUserRequest(BaseModel):
-    """Request model for creating a new user"""
-    username: str = Field(..., min_length=3, max_length=50, description="Username must be between 3 and 50 characters")
-    email: EmailStr = Field(..., description="Valid email address")
-    steam_id: Optional[str] = Field(None, max_length=100, description="Steam ID (optional)")
-    
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "username": "gamer123",
-                "email": "gamer123@example.com",
-                "steam_id": "76561198000000000"
-            }
-        }
-
-class User(BaseModel):
-    """User model"""
-    id: int
-    username: str
-    email: str
-    steam_id: Optional[str] = None
-    created_at: datetime
-    updated_at: datetime
+class App(BaseModel):
+    """App model"""
+    app_id: str
+    name: Optional[str] = None
+    type: Optional[str] = None
+    created_at: str
+    updated_at: str
     
     class Config:
         from_attributes = True
         json_schema_extra = {
             "example": {
-                "id": 1,
-                "username": "gamer123",
-                "email": "gamer123@example.com",
-                "steam_id": "76561198000000000",
-                "created_at": "2025-01-27T10:30:00Z",
-                "updated_at": "2025-01-27T10:30:00Z"
+                "app_id": "1245623",
+                "name": "ELDEN RING",
+                "type": "Game",
+                "created_at": "2025-08-02T17:13:33.110Z",
+                "updated_at": "2025-08-02T17:13:37.782Z"
             }
         }
 

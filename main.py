@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 import os
 from dotenv import load_dotenv
 from database import DatabaseManager
-from models import CreateUserRequest, User, ApiResponse
+from models import App, ApiResponse
 from typing import List
 
 # Load environment variables
@@ -24,7 +24,7 @@ async def lifespan(app: FastAPI):
 # Create FastAPI app
 app = FastAPI(
     title="Steam External Backend API",
-    description="FastAPI backend connected to Turso database",
+    description="FastAPI backend for Steam apps data connected to Turso database",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -64,86 +64,43 @@ async def health_check():
             detail=f"Database connection failed: {str(e)}"
         )
 
-@app.post("/users", response_model=ApiResponse)
-async def create_user(user_data: CreateUserRequest):
-    """Create a new user"""
+@app.get("/apps", response_model=ApiResponse)
+async def get_apps():
+    """Get all apps"""
     try:
-        user_id = await db_manager.create_user(
-            username=user_data.username,
-            email=user_data.email,
-            steam_id=user_data.steam_id
-        )
+        apps = await db_manager.get_all_apps()
         return ApiResponse(
             success=True,
-            message="User created successfully",
-            data={"user_id": user_id}
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Failed to create user: {str(e)}"
-        )
-
-@app.get("/users", response_model=ApiResponse)
-async def get_users():
-    """Get all users"""
-    try:
-        users = await db_manager.get_all_users()
-        return ApiResponse(
-            success=True,
-            message="Users retrieved successfully",
-            data={"users": users}
+            message="Apps retrieved successfully",
+            data={"apps": apps}
         )
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to retrieve users: {str(e)}"
+            detail=f"Failed to retrieve apps: {str(e)}"
         )
 
-@app.get("/users/{user_id}", response_model=ApiResponse)
-async def get_user(user_id: int):
-    """Get a specific user by ID"""
+@app.get("/apps/{app_id}", response_model=ApiResponse)
+async def get_app(app_id: str):
+    """Get a specific app by app_id"""
     try:
-        user = await db_manager.get_user_by_id(user_id)
-        if not user:
+        app = await db_manager.get_app_by_id(app_id)
+        if not app:
             raise HTTPException(
                 status_code=404,
-                detail="User not found"
+                detail="App not found"
             )
         return ApiResponse(
             success=True,
-            message="User retrieved successfully",
-            data={"user": user}
+            message="App retrieved successfully",
+            data={"app": app}
         )
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to retrieve user: {str(e)}"
-        )
-
-@app.delete("/users/{user_id}", response_model=ApiResponse)
-async def delete_user(user_id: int):
-    """Delete a user by ID"""
-    try:
-        success = await db_manager.delete_user(user_id)
-        if not success:
-            raise HTTPException(
-                status_code=404,
-                detail="User not found"
-            )
-        return ApiResponse(
-            success=True,
-            message="User deleted successfully",
-            data={"deleted_user_id": user_id}
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to delete user: {str(e)}"
+            detail=f"Failed to retrieve app: {str(e)}"
         )
 
 if __name__ == "__main__":
